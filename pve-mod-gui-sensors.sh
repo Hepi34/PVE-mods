@@ -228,7 +228,7 @@ function configure {
 	# Check for LSI MegaRAID controllers for ROC temperature
 	#region roc temp setup
 	msgb "\n=== Detecting LSI MegaRAID ROC temperature sensor ==="
-	if command -v storcli &>/dev/null && storcli /c0 show temperature &>/dev/null | grep -q "ROC temperature"; then
+	if command -v storcli &>/dev/null && storcli /c0 show temperature &>/dev/null | grep "ROC temperature"; then
    		ENABLE_ROC_TEMP=true
     	info "ROC temperature sensor detected."
 	else
