@@ -225,6 +225,17 @@ function configure {
     fi
 	#endregion hdd setup
 
+	# Check for LSI MegaRAID controllers for ROC temperature
+	#region roc temp setup
+	msgb "\n=== Detecting LSI MegaRAID ROC temperature sensor ==="
+	if command -v storcli &>/dev/null && storcli /c0 show temperature &>/dev/null | grep -q "ROC temperature"; then
+   		ENABLE_ROC_TEMP=true
+    	info "ROC temperature sensor detected."
+	else
+    	ENABLE_ROC_TEMP=false
+	fi
+	#endregion roc temp setup
+
     #### NVMe ####
 	#region nvme setup
     msgb "\n=== Detecting NVMe temperature sensors ==="
@@ -408,6 +419,7 @@ function install_mod {
     generate_and_insert_widget "$ENABLE_SYSTEM_INFO" "generate_system_info" "system_info"
     generate_and_insert_widget "$ENABLE_UPS" "generate_ups_widget" "ups"
     generate_and_insert_widget "$ENABLE_HDD_TEMP" "generate_hdd_widget" "hdd"
+	generate_and_insert_widget "$ENABLE_ROC_TEMP" "generate_roc_widget" "roc"
     generate_and_insert_widget "$ENABLE_NVME_TEMP" "generate_nvme_widget" "nvme"
 
     if [[ "$ENABLE_HDD_TEMP" = true || "$ENABLE_NVME_TEMP" = true ]]; then
@@ -476,6 +488,10 @@ insert_node_info() {
     if [[ $ENABLE_SYSTEM_INFO == true ]]; then
         collect_system_info "$output_file"
     fi
+
+	if [[ $ENABLE_ROC_TEMP == true ]]; then
+        collect_roc_output "$output_file"
+    fi
 }
 
 # Collect lm-sensors data
@@ -521,6 +537,27 @@ collect_sensors_output() {
 	' "$NODES_PM_FILE"
 	#endregion sensors heredoc
     info "Sensors' retriever added to \"$output_file\"."
+}
+
+# Collect ROC temperature data
+collect_roc_output() {
+    local output_file="$1"
+    local roc_cmd="storcli /c0 show temperature 2>/dev/null | grep 'ROC temperature' | awk '{print \$NF}'"
+
+    # region roc heredoc
+    sed -i "/my \$dinfo = df('\/', 1);/i\\
+		# Collect ROC temperature information\\
+		sub get_roc_temp {\\
+			my \$cmd = '$roc_cmd';\\
+			my \$output = \`\\\$cmd\`;\\
+			chomp(\$output);\\
+			return \$output;\\
+		}\\
+		\$res->{rocTemp} = get_roc_temp();\\
+" "$NODES_PM_FILE"
+    # endregion roc heredoc
+
+    info "ROC temperature retriever added to \"$output_file\"."
 }
 
 # Collect UPS data
@@ -1254,6 +1291,54 @@ EOF
 	#endregion hdd widget heredoc
     if [[ $? -ne 0 ]]; then
         echo "Error: Failed to generate hhd widget code" >&2
+        exit 1
+    fi
+}
+
+# Function to generate ROC widget
+generate_roc_widget() {
+	#region roc widget heredoc
+	(
+		export HELPERCTORPARAMS
+		cat <<'EOF' | envsubst '$HELPERCTORPARAMS' > "$1"
+		{
+			itemId: 'thermalRoc',
+			colspan: 2,
+			printBar: false,
+			title: gettext('RAID Controller (ROC) Thermal State'),
+			iconCls: 'fa fa-fw fa-thermometer-half',
+			textField: 'rocTemp',
+			renderer: function(value) {
+				const tempHelper = Ext.create('PVE.mod.TempHelper', $HELPERCTORPARAMS);
+				
+				if (!value || value.trim() === '') {
+					return '<div style="text-align: left; margin-left: 28px;">N/A</div>';
+				}
+				
+				let tempVal = parseFloat(value);
+				if (isNaN(tempVal)) {
+					return '<div style="text-align: left; margin-left: 28px;">N/A</div>';
+				}
+				
+				tempVal = tempHelper.getTemp(tempVal);
+				
+				let tempStyle = '';
+				if (tempVal >= 80) {
+					tempStyle = 'color: red; font-weight: bold;';
+				} else if (tempVal >= 70) {
+					tempStyle = 'color: #FFC300; font-weight: bold;';
+				}
+				
+				const tempStr = `ROC:&nbsp;<span style="${tempStyle}">${Ext.util.Format.number(tempVal, '0.0')}${tempHelper.getUnit()}</span>`;
+				
+				return '<div style="text-align: left; margin-left: 28px;">' + tempStr + '</div>';
+			}
+		},
+EOF
+	)
+	#endregion roc widget heredoc
+    if [[ $? -ne 0 ]]; then
+        echo "Error: Failed to generate roc widget code" >&2
         exit 1
     fi
 }
