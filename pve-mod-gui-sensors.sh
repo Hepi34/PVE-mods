@@ -232,6 +232,7 @@ function configure {
    		ENABLE_ROC_TEMP=true
     	info "ROC temperature sensor detected."
 	else
+		warn "No ROC temperature sensor found."
     	ENABLE_ROC_TEMP=false
 	fi
 	#endregion roc temp setup
@@ -542,7 +543,7 @@ collect_sensors_output() {
 # Collect ROC temperature data
 collect_roc_output() {
     local output_file="$1"
-    local roc_cmd="storcli /c0 show temperature 2>/dev/null | grep 'ROC temperature' | awk '{print \$NF}'"
+    local roc_cmd="storcli /c0 show temperature 2>/dev/null | grep 'ROC temperature' | awk '{print$NF}'"
 
     # region roc heredoc
     sed -i "/my \$dinfo = df('\/', 1);/i\\
