@@ -228,11 +228,18 @@ function configure {
 	# Check for LSI MegaRAID controllers for ROC temperature
 	#region roc temp setup
 	msgb "\n=== Detecting LSI MegaRAID ROC temperature sensor ==="
-	if command -v storcli &>/dev/null && storcli /c0 show temperature &>/dev/null | grep "ROC temperature"; then
-   		ENABLE_ROC_TEMP=true
-    	info "ROC temperature sensor detected."
+	if command -v storcli &>/dev/null; then
+    	local rocTemp=$(storcli /c0 show temperature 2>/dev/null | grep "ROC temperature" | awk '{print $NF}')
+		local helperPresent=$(cat /var/log/pvemodhelper/roctemp.log 2>/dev/null | wc -l)
+    	if [ -n "$rocTemp" ] && [ "$rocTemp" != "" ] && [ "$helperPresent" -gt 0 ]; then
+        	ENABLE_ROC_TEMP=true
+        	info "ROC temperature sensor detected: ${rocTemp}°C"
+    	else
+        	warn "No ROC temperature sensor found."
+        	ENABLE_ROC_TEMP=false
+    	fi
 	else
-		warn "No ROC temperature sensor found."
+    	warn "storcli command not found. Skipping ROC temperature detection."
     	ENABLE_ROC_TEMP=false
 	fi
 	#endregion roc temp setup
@@ -286,6 +293,14 @@ function configure {
 	else
 		warn "No fan speed sensors found."
 		ENABLE_FAN_SPEED=false
+	fi
+
+	local helpersPresent=$(cat /var/log/pvemodhelper/fanspeed.log 2>/dev/null | wc -l)
+	if [ "$helpersPresent" -gt 0 ]; then
+		info "Fan speed helper log detected."
+		ENABLE_CUSTOM_FAN_SPEED=true
+	else
+		warn "Fan speed helper log is missing or empty. Fan speeds may not display correctly."
 	fi
 	#endregion fan setup
 
@@ -429,6 +444,7 @@ function install_mod {
     fi
 
     generate_and_insert_widget "$ENABLE_FAN_SPEED" "generate_fan_widget" "fan"
+	generate_and_insert_widget "$ENABLE_CUSTOM_FAN_SPEED" "generate_custom_fan_widget" "custom_fan"
     generate_and_insert_widget "$ENABLE_RAM_TEMP" "generate_ram_widget" "ram"
     generate_and_insert_widget "$ENABLE_CPU" "generate_cpu_widget" "cpu"
 
@@ -493,6 +509,11 @@ insert_node_info() {
 	if [[ $ENABLE_ROC_TEMP == true ]]; then
         collect_roc_output "$output_file"
     fi
+
+    # Collect custom fan helper output if present
+    if [[ $ENABLE_CUSTOM_FAN_SPEED == true ]]; then
+        collect_fan_output "$output_file"
+    fi
 }
 
 # Collect lm-sensors data
@@ -540,25 +561,59 @@ collect_sensors_output() {
     info "Sensors' retriever added to \"$output_file\"."
 }
 
-# Collect ROC temperature data
+# Improved version for collect_roc_output
 collect_roc_output() {
     local output_file="$1"
-    local roc_cmd="storcli /c0 show temperature 2>/dev/null | grep 'ROC temperature' | awk '{print$NF}'"
 
-    # region roc heredoc
     sed -i "/my \$dinfo = df('\/', 1);/i\\
-		# Collect ROC temperature information\\
-		sub get_roc_temp {\\
-			my \$cmd = '$roc_cmd';\\
-			my \$output = \`\\\$cmd\`;\\
-			chomp(\$output);\\
-			return \$output;\\
-		}\\
-		\$res->{rocTemp} = get_roc_temp();\\
-" "$NODES_PM_FILE"
-    # endregion roc heredoc
+        # Collect ROC temperature from local helper log\\
+        sub get_roc_temp {\\
+            my \$log_file = '/var/log/pvemodhelper/roctemp.log';\\
+            if (-e \$log_file) {\\
+                open(my \$fh, '<', \$log_file) or return '';\\
+                my \$temp = <\$fh>;\\
+                close(\$fh);\\
+                if (defined \$temp) {\\
+                    \$temp =~ s/\\s+//g; # Remove any whitespace or newlines\\
+                    return \$temp;\\
+                }\\
+            }\\
+            return '';\\
+        }\\
+        \$res->{rocTemp} = get_roc_temp();\\
+" "$output_file"
 
-    info "ROC temperature retriever added to \"$output_file\"."
+    info "ROC temperature retriever (log-based) added to $output_file."
+}
+
+# Collect custom fan data from helper logs
+collect_fan_output() {
+    local output_file="$1"
+
+    sed -i "/my \$dinfo = df('\/', 1);/i\\
+        # Collect fan information from helper logs\\
+        sub get_custom_fan_data {\\
+            my (\$file) = @_;\\
+            if (-e \$file) {\\
+                open(my \$fh, '<', \$file) or return '';\\
+                my \$val = <\$fh>;\\
+                close(\$fh);\\
+                if (defined \$val) {\\
+                    \$val =~ s/\\s+//g;\\
+                    return \$val;\\
+                }\\
+            }\\
+            return '';\\
+        }\\
+        # Retrieve both speed (percent) and rpm and create a combined field for the UI\\
+        my \$fs = get_custom_fan_data('/var/log/pvemodhelper/fanspeed.log');\\
+        my \$fr = get_custom_fan_data('/var/log/pvemodhelper/fanrpm.log');\\
+        \$res->{fanSpeed} = \$fs;\\
+        \$res->{fanRPM}   = \$fr;\\
+        \$res->{fanCombined} = ((\$fs || '') . '|' . (\$fr || '')) || '';\\
+" "$output_file"
+
+    info "Fan data retriever updated to match ROC logic."
 }
 
 # Collect UPS data
@@ -655,10 +710,16 @@ EOF
             exit 1
         fi
 
-        insert_widget_after_thermal "$temp_js_file"
-        rm "$temp_js_file"
+        # Only insert drive header if it doesn't already exist (idempotent)
+        if grep -q "gettext('Drive(s)')" "$PVE_MANAGER_LIB_JS_FILE"; then
+            info "Drive header already present. Skipping insertion."
+            rm "$temp_js_file"
+        else
+            insert_widget_after_thermal "$temp_js_file"
+            rm "$temp_js_file"
+        fi
     fi
-}
+} 
 
 # Function to expand space and modify StatusView properties
 expand_statusview_space() {
@@ -1225,6 +1286,58 @@ EOF
         echo "Error: Failed to generate fan widget code" >&2
         exit 1
     fi
+}
+
+# Generate custom fan widget
+generate_custom_fan_widget() {
+    local output_file="$1"
+
+    cat > "$output_file" <<'EOF'
+        {
+            xtype: 'box',
+            colspan: 2,
+            html: gettext('Cooling'),
+        },
+        {
+            itemId: 'customfan',
+            colspan: 2,
+            printBar: false,
+            title: gettext('System Fans'),
+            iconCls: 'fa fa-fw fa-snowflake-o',
+            textField: 'fanCombined',
+            renderer: function(value, metaData, record) {
+                // 'value' is the combined field 'fanSpeed|fanRPM'
+                const combined = (value !== undefined && value !== null) ? String(value).trim() : '';
+                let speed = '';
+                let rpm = '';
+                if (combined !== '') {
+                    const parts = combined.split('|');
+                    speed = parts[0] ? String(parts[0]).trim() : '';
+                    rpm = parts[1] ? String(parts[1]).trim() : '';
+                } else if (record && record.get) {
+                    // fallback: read separate fields if combined missing
+                    const speedRaw = record.get('fanSpeed');
+                    const rpmRaw = record.get('fanRPM');
+                    speed = (speedRaw !== undefined && speedRaw !== null) ? String(speedRaw).trim() : '';
+                    rpm = (rpmRaw !== undefined && rpmRaw !== null) ? String(rpmRaw).trim() : '';
+                }
+
+                if (speed === '' && rpm === '') return '<div style="text-align: left; margin-left: 28px;">N/A</div>';
+
+                let parts = [];
+                if (rpm !== '') parts.push(rpm + ' RPM');
+                if (speed !== '') parts.push(speed + ' %');
+
+                return '<div style="text-align: left; margin-left: 28px;">' + parts.join(' | ') + '</div>';
+            }
+        },
+        {
+            xtype: 'box',
+            colspan: 2,
+            html: '<div style="height:10px;"></div>',
+        },
+EOF
+    info "Custom fan widget updated to match ROC style."
 }
 
 # Function to generate UPS widget

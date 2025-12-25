@@ -247,7 +247,7 @@ function insert_gpu_widget() {
 	    textField: 'nvidiaGpuOutput',
 	    renderer: function(value) {
 	        if (!value || value.trim() === '') {
-	            return '<div style="text-align: left; margin-left: 28px;">No NVIDIA GPUs detected or nvidia-smi not available</div>';
+	            return '<div style="text-align: right;">No NVIDIA GPUs detected or nvidia-smi not available</div>';
 	        }
 	        
 	        // Temperature conversion settings
@@ -367,8 +367,7 @@ WIDGET_EOF
 	            }
 	            
 	            var gpuHtml = '<div style="margin-bottom: 8px;">';
-	            gpuHtml += '<div style="font-weight: bold; margin-bottom: 2px;">GPU ' + gpuIndex + ': ' + gpuName + '</div>';
-	            gpuHtml += '<div style="margin-left: 10px;">';
+	            gpuHtml += '<div style="margin-bottom: 2px; text-align: right;">GPU ' + gpuIndex + ': ' + gpuName + '</div>';
 	            gpuHtml += 'Temp: ' + formatTemp(temp);
 	            gpuHtml += ' &nbsp;|&nbsp; GPU: ' + formatUtilization(gpuUtil);
 	            gpuHtml += ' &nbsp;|&nbsp; Mem: ' + formatMemory(memUsed, memTotal);
